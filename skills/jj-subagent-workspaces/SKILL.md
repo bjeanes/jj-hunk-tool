@@ -11,7 +11,7 @@ A **jj workspace** is a second working directory attached to the same `.jj/repo/
 
 Workspaces are an excellent substrate for delegating work to a subagent:
 
-- The subagent gets a real on-disk directory it can `cd` into and edit freely.
+- The subagent gets its own on-disk directory to edit freely.
 - Any commit it makes is **immediately visible** in the main workspace — no `pull`, `fetch`, `push`, or `merge` step.
 - When the subagent finishes, the main agent can rebase, squash, or reorder the resulting commits into the user's stack with normal jj operations.
 - Cleanup is two commands.
@@ -109,20 +109,17 @@ See the [prompt template](#subagent-prompt-template) below.
 
 ### 4. Spawn the subagent
 
-Mechanism is up to you. The only requirement is that the subagent runs with the workspace directory as its working directory. Examples:
+Mechanism is up to you. The only requirement is that the subagent **starts** with the workspace directory as its working directory. Prefer dispatch APIs that set cwd directly over shell `cd`:
 
 ```bash
-# Plain shell agent
-( cd ../task-foo && agent-cli "$PROMPT" )
-
-# Subprocess with explicit cwd
+# Preferred: set cwd via the dispatch API
 agent-cli --cwd ../task-foo "$PROMPT"
 
 # Tool-based dispatch — set the tool's working-directory parameter
 # Background process — capture output to a log file under ../task-foo/
 ```
 
-This skill makes no assumption about the spawning API beyond that.
+Avoid `( cd ../task-foo && agent-cli "$PROMPT" )` — while a subshell limits blast radius, it normalizes the `cd && jj` pattern that subagents may imitate mid-task. Use `--cwd` or equivalent.
 
 ### 5. Inspect the result
 
@@ -136,7 +133,7 @@ jj show --git --no-pager task-foo@-            # diff of the most recent real co
 
 If the subagent followed the brief, its head is `task-foo@-` and `task-foo@` is empty. If it didn't:
 
-- `task-foo@` still has uncommitted work — either commit it on its behalf with `jj commit -r task-foo@ -m "..."` (from inside the workspace) or abandon it.
+- `task-foo@` still has uncommitted work — either commit it on its behalf with `jj commit -r task-foo@ -m "..."` (works from any workspace — do NOT cd into the subagent's workspace) or abandon it.
 - `task-foo@` has a description but is non-empty — same thing; it's still "being edited".
 
 ### 6. Integrate
@@ -195,13 +192,18 @@ Adapt to your dispatch mechanism. The core pieces:
 
 ```
 You are working inside a jj workspace at: <ABSOLUTE_PATH>
-Set your working directory to that path and do not leave it.
+Your working directory is already set. Do NOT `cd` anywhere else.
 
 Task: <USER-FACING TASK DESCRIPTION>
 
 Ground rules:
 - Use `jj` for all version control. Do NOT use `git`. If a `jj-surgeon`
   skill (or any jj reference) is available, follow it.
+- Run all `jj` commands from your workspace directory. NEVER `cd` to
+  another workspace (including the primary) to run jj — the op log
+  and commit graph are shared, so jj commands work from any workspace,
+  but the *working copy* they affect depends on cwd. `cd`-ing to
+  another workspace corrupts that workspace's `@`.
 - Make atomic commits with `jj commit -m "..."` as you go. Leave `@`
   empty when you finish (`jj commit`, not `jj describe`).
 - Do NOT touch other workspaces. Do NOT run `jj op restore` — the op
@@ -219,6 +221,7 @@ Done when:
 
 ## Pitfalls
 
+- **NEVER `cd` to another workspace to run jj commands.** jj determines which working copy to snapshot based on cwd. If you `cd` to the primary workspace and run `jj status`, you snapshot *that* workspace's `@` — potentially clobbering work the user or another agent has in progress. Cross-workspace inspection uses revsets (`task-foo@`, `default@`) from wherever you are; cross-workspace writes use `-r` flags. There is no jj operation that requires you to be in a specific workspace's directory.
 - **`forget` does not delete files; `rm -rf` does not forget.** Always pair them. A `rm -rf` without `forget` leaves a dangling workspace entry that jj will complain about.
 - **`jj op restore` is repo-wide.** If the subagent runs it, every workspace rewinds, including the user's. Forbid it in the prompt. Use `jj op revert <op-id>` for targeted undo, or `jj --at-op=<op-id> restore -r @` for file-level recovery.
 - **Stale working copies.** If you rebase the subagent's ancestors while it's still running, its next `jj` command will say "stale". Either avoid rewriting its ancestors mid-task, or have it run `jj workspace update-stale` before resuming.
