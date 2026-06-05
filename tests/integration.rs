@@ -352,10 +352,7 @@ fn hunks_default_no_truncation() {
 
     let output = repo.tool_ok(&["hunks"]);
     // Default (full) mode should show all lines, not truncate
-    assert!(
-        !output.contains("... (+"),
-        "default should not truncate"
-    );
+    assert!(!output.contains("... (+"), "default should not truncate");
     assert!(output.contains("line10"), "should show all lines");
 }
 
@@ -524,7 +521,10 @@ fn hunks_compact_mode() {
     repo.write_file("a.txt", "line1\nchanged\nline3\n");
 
     let output = repo.tool_ok(&["hunks", "--compact"]);
-    assert!(!output.contains("1:"), "compact should not have line numbers");
+    assert!(
+        !output.contains("1:"),
+        "compact should not have line numbers"
+    );
     assert!(output.contains("+changed") || output.contains("-line2"));
 }
 
@@ -968,7 +968,10 @@ fn squash_single_hunk_into_parent() {
 
     // @ should be empty (change was squashed into parent)
     let wc_diff = repo.jj_diff("@");
-    assert!(wc_diff.trim().is_empty(), "working copy should be empty after squash");
+    assert!(
+        wc_diff.trim().is_empty(),
+        "working copy should be empty after squash"
+    );
 }
 
 #[test]
@@ -985,11 +988,17 @@ fn squash_one_of_two_hunks() {
 
     // a.txt change should have been squashed into parent
     let parent_diff = repo.jj_diff("@-");
-    assert!(parent_diff.contains("a.txt"), "parent should have a.txt change");
+    assert!(
+        parent_diff.contains("a.txt"),
+        "parent should have a.txt change"
+    );
 
     // b.txt change should still be in working copy
     let wc_diff = repo.jj_diff("@");
-    assert!(wc_diff.contains("b.txt"), "working copy should still have b.txt");
+    assert!(
+        wc_diff.contains("b.txt"),
+        "working copy should still have b.txt"
+    );
 }
 
 #[test]
@@ -1273,8 +1282,7 @@ fn jj_tool_reverse_mode() {
     .unwrap();
 
     // With reverse: reset right to left (hello\nworld\n), then apply patch in reverse (remove world)
-    let output =
-        run_jj_tool_with_reverse(left.path(), right.path(), Some(patch_file.path()), true);
+    let output = run_jj_tool_with_reverse(left.path(), right.path(), Some(patch_file.path()), true);
     assert!(output.status.success());
 
     let content = std::fs::read_to_string(right.path().join("file.txt")).unwrap();
@@ -1407,9 +1415,7 @@ fn absorb_single_hunk_to_ancestor() {
 fn absorb_multiple_hunks_to_different_ancestors() {
     let repo = TestRepo::new();
     // Base: two widely separated functions
-    let base = "func_a\n".to_string()
-        + &"padding\n".repeat(20)
-        + "func_b\n";
+    let base = "func_a\n".to_string() + &"padding\n".repeat(20) + "func_b\n";
     repo.commit_file("f.txt", &base);
 
     // Commit X: modify func_a
@@ -1456,9 +1462,7 @@ fn absorb_multiple_hunks_to_different_ancestors() {
 fn absorb_insertion_same_file_uses_file_fallback() {
     let repo = TestRepo::new();
     // Base: some content with a gap
-    let base = "func_a\n".to_string()
-        + &"padding\n".repeat(20)
-        + "end\n";
+    let base = "func_a\n".to_string() + &"padding\n".repeat(20) + "end\n";
     repo.commit_file("f.txt", &base);
 
     // Commit X: modify func_a
@@ -1669,8 +1673,10 @@ fn absorb_file_fallback_picks_most_recent() {
     repo.jj(&["commit", "-m", "commit Y"]);
 
     // @ adds pure insertion in the middle (not overlapping X or Y's hunks)
-    let working = after_y.replace("padding\npadding\npadding\npadding\npadding\n",
-        "padding\npadding\nINSERTED\npadding\npadding\npadding\n");
+    let working = after_y.replace(
+        "padding\npadding\npadding\npadding\npadding\n",
+        "padding\npadding\nINSERTED\npadding\npadding\npadding\n",
+    );
     repo.write_file("f.txt", &working);
 
     repo.tool_ok(&["absorb"]);
@@ -1798,12 +1804,10 @@ fn absorb_interactive_shows_absolute_line_numbers() {
     );
     // Should NOT show relative "1:" as the first changed line
     // (context starts earlier, so first line number should be > 1)
-    let first_numbered = output
-        .lines()
-        .find(|l| {
-            let trimmed = l.trim();
-            trimmed.starts_with("1:") || trimmed.starts_with(" 1:")
-        });
+    let first_numbered = output.lines().find(|l| {
+        let trimmed = l.trim();
+        trimmed.starts_with("1:") || trimmed.starts_with(" 1:")
+    });
     // If context starts at line 7+ (3 lines of context), "1:" should not appear
     assert!(
         first_numbered.is_none(),
@@ -1957,9 +1961,7 @@ fn split_reports_rebase_of_descendants() {
 
     // Split the ancestor by pulling a.txt out — descendants get rebased
     let hunk_id = repo.get_hunk_id_for_file("a.txt", &["-r", "@--"]);
-    let (stdout, stderr) = repo.tool_output(&[
-        "split", &hunk_id, "-r", "@--", "-m", "just a.txt",
-    ]);
+    let (stdout, stderr) = repo.tool_output(&["split", &hunk_id, "-r", "@--", "-m", "just a.txt"]);
     let combined = format!("{stdout}{stderr}");
 
     assert!(
@@ -1991,7 +1993,8 @@ fn squash_reports_conflicts_in_descendants() {
     let a_id = log.trim();
 
     // Squash the hunk into A — this should conflict with B
-    let (stdout, stderr) = repo.tool_output(&["squash", &hunk_id, "--into", a_id, "-m", "A: fixed"]);
+    let (stdout, stderr) =
+        repo.tool_output(&["squash", &hunk_id, "--into", a_id, "-m", "A: fixed"]);
     let combined = format!("{stdout}{stderr}");
 
     assert!(
@@ -2118,12 +2121,15 @@ fn absorb_prints_undo_operation_id() {
     );
 
     // Extract the op ID and verify it works
-    let op_line = output.lines().find(|l| l.contains("jj op restore")).unwrap();
-    let op_id = op_line.trim().strip_prefix("To undo, run: jj op restore ").unwrap();
-    assert!(
-        !op_id.is_empty(),
-        "operation ID should not be empty"
-    );
+    let op_line = output
+        .lines()
+        .find(|l| l.contains("jj op restore"))
+        .unwrap();
+    let op_id = op_line
+        .trim()
+        .strip_prefix("To undo, run: jj op restore ")
+        .unwrap();
+    assert!(!op_id.is_empty(), "operation ID should not be empty");
 
     // Verify we can actually restore to that operation
     repo.jj(&["op", "restore", op_id]);
@@ -2175,7 +2181,13 @@ fn debug_flag_split_prints_jj_command() {
     repo.write_file("a.txt", "ADDED\nline1\nline2\nline3\nADDED2\n");
 
     let stdout = repo.tool_ok(&["hunks"]);
-    let hunk_id = stdout.lines().next().unwrap().split_whitespace().next().unwrap();
+    let hunk_id = stdout
+        .lines()
+        .next()
+        .unwrap()
+        .split_whitespace()
+        .next()
+        .unwrap();
 
     let (_stdout, stderr) = repo.tool_output(&["--debug", "split", hunk_id, "-m", "first"]);
 

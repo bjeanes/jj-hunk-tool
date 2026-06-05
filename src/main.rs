@@ -366,8 +366,10 @@ fn main() -> Result<()> {
                 let t = to.as_deref().unwrap_or("@");
                 let raw = diff::get_jj_diff_from_to(f, t, debug)?;
                 let mut args = vec![
-                    "--from".to_string(), f.to_string(),
-                    "--to".to_string(), t.to_string(),
+                    "--from".to_string(),
+                    f.to_string(),
+                    "--to".to_string(),
+                    t.to_string(),
                 ];
                 if restore_descendants {
                     args.push("--restore-descendants".into());
@@ -408,7 +410,12 @@ fn main() -> Result<()> {
                 let f = from.as_deref().unwrap_or("@");
                 let t = into.as_deref().unwrap_or("@");
                 let raw = diff::get_jj_diff_from_to(f, t, debug)?;
-                let mut args = vec!["--from".to_string(), f.to_string(), "--into".to_string(), t.to_string()];
+                let mut args = vec![
+                    "--from".to_string(),
+                    f.to_string(),
+                    "--into".to_string(),
+                    t.to_string(),
+                ];
                 if restore_descendants {
                     args.push("--restore-descendants".into());
                 }

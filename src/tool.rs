@@ -49,9 +49,7 @@ fn format_hunk_display(hunk: &DiffHunk, color: bool) -> String {
     let mut new_line = new_start;
 
     // Compute max line number width for alignment
-    let max_line = old_start
-        .max(new_start)
-        + hunk.lines.len();
+    let max_line = old_start.max(new_start) + hunk.lines.len();
     let width = max_line.to_string().len();
 
     for line in &hunk.lines {
@@ -82,7 +80,7 @@ fn format_hunk_display(hunk: &DiffHunk, color: bool) -> String {
             let highlighted = if prefix != "-" {
                 // Syntax highlight additions and context
                 highlighter
-                    .highlight_line(&content_with_nl, &ss)
+                    .highlight_line(&content_with_nl, ss)
                     .map(|ranges| {
                         let mut s = as_24_bit_terminal_escaped(&ranges, false);
                         // Strip trailing newline from highlighted output
@@ -186,7 +184,12 @@ pub fn build_combined_patch(specs: &[HunkSpec<'_>], reverse: bool) -> Result<Str
 }
 
 /// Run a jj command with our tool configured via inline --config flags.
-fn run_jj_with_tool(jj_args: &[&str], patch_content: &str, reverse: bool, debug: bool) -> Result<()> {
+fn run_jj_with_tool(
+    jj_args: &[&str],
+    patch_content: &str,
+    reverse: bool,
+    debug: bool,
+) -> Result<()> {
     let exe = std::env::current_exe().context("finding own executable")?;
 
     let mut patch_file = tempfile::NamedTempFile::new().context("creating temp patch file")?;
@@ -196,8 +199,7 @@ fn run_jj_with_tool(jj_args: &[&str], patch_content: &str, reverse: bool, debug:
 
     let exe_str = exe.display().to_string();
     let config_program = format!("merge-tools.jj-hunk-tool.program={exe_str:?}");
-    let config_edit_args =
-        r#"merge-tools.jj-hunk-tool.edit-args=["_jj-tool", "$left", "$right"]"#;
+    let config_edit_args = r#"merge-tools.jj-hunk-tool.edit-args=["_jj-tool", "$left", "$right"]"#;
 
     let mut cmd = Command::new("jj");
     cmd.args(jj_args);
@@ -212,7 +214,10 @@ fn run_jj_with_tool(jj_args: &[&str], patch_content: &str, reverse: bool, debug:
 
     if debug {
         eprintln!("debug: running jj {}", jj_args.join(" "));
-        eprintln!("debug: patch content ({} bytes):\n{patch_content}", patch_content.len());
+        eprintln!(
+            "debug: patch content ({} bytes):\n{patch_content}",
+            patch_content.len()
+        );
         eprintln!("debug: reverse={reverse}");
         eprintln!("debug: patch file: {}", patch_file.path().display());
     }
@@ -349,7 +354,7 @@ pub fn absorb_hunks(
     // 1. Get mutable ancestors and repo root in parallel
     let (ancestors_result, repo_root_result) = std::thread::scope(|s| {
         let anc = s.spawn(|| diff::get_mutable_ancestors_with_descriptions(source));
-        let root = s.spawn(|| diff::get_repo_root());
+        let root = s.spawn(diff::get_repo_root);
         (anc.join().unwrap(), root.join().unwrap())
     });
     let (ancestors, ancestor_descs) = ancestors_result?;
@@ -394,7 +399,12 @@ pub fn absorb_hunks(
             .iter()
             .map(|file| {
                 let root = &repo_root;
-                s.spawn(move || (file.clone(), diff::get_ancestors_touching_file(source, file, root)))
+                s.spawn(move || {
+                    (
+                        file.clone(),
+                        diff::get_ancestors_touching_file(source, file, root),
+                    )
+                })
             })
             .collect();
 
@@ -657,7 +667,11 @@ pub fn absorb_hunks(
                 .map(|(_, h)| *h);
 
             // Display hunk with syntax highlighting and absolute line numbers
-            let header_style = if is_tty { Style::new().bold() } else { Style::new() };
+            let header_style = if is_tty {
+                Style::new().bold()
+            } else {
+                Style::new()
+            };
             println!(
                 "\n{} {} (+{} -{})",
                 header_style.apply_to(&routing.hunk_id),
@@ -757,15 +771,26 @@ pub fn absorb_hunks(
                         // Target selection still uses line input for the number
                         let mut num_input = String::new();
                         std::io::stdin().read_line(&mut num_input)?;
-                        if let Ok(n) = num_input.trim().parse::<usize>() {
-                            if n >= 1 && n <= ancestor_list.len() {
-                                routing.target = Some(ancestor_list[n - 1].clone());
-                                routing.reason = "retargeted";
-                                let desc = ancestor_descs.get(&ancestor_list[n - 1]).cloned().unwrap_or_default();
-                                println!("→ Retargeted to {}{}", ancestor_list[n - 1],
-                                    if desc.is_empty() { String::new() } else { format!(" ({desc})") });
-                                break;
-                            }
+                        if let Ok(n) = num_input.trim().parse::<usize>()
+                            && n >= 1
+                            && n <= ancestor_list.len()
+                        {
+                            routing.target = Some(ancestor_list[n - 1].clone());
+                            routing.reason = "retargeted";
+                            let desc = ancestor_descs
+                                .get(&ancestor_list[n - 1])
+                                .cloned()
+                                .unwrap_or_default();
+                            println!(
+                                "→ Retargeted to {}{}",
+                                ancestor_list[n - 1],
+                                if desc.is_empty() {
+                                    String::new()
+                                } else {
+                                    format!(" ({desc})")
+                                }
+                            );
+                            break;
                         }
                         println!("Invalid selection.");
                         continue;
@@ -787,8 +812,10 @@ pub fn absorb_hunks(
     }
 
     // 4. Print routing plan
-    let absorbed: Vec<&(HunkRouting, HunkFingerprint)> =
-        routings.iter().filter(|(r, _)| r.target.is_some()).collect();
+    let absorbed: Vec<&(HunkRouting, HunkFingerprint)> = routings
+        .iter()
+        .filter(|(r, _)| r.target.is_some())
+        .collect();
     let ambiguous: Vec<&(HunkRouting, HunkFingerprint)> = routings
         .iter()
         .filter(|(r, _)| r.reason == "ambiguous")
@@ -965,130 +992,6 @@ fn parse_old_range(header: &str) -> Option<(usize, usize)> {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parse_old_range_with_count() {
-        assert_eq!(
-            parse_old_range("@@ -1,3 +1,3 @@"),
-            Some((1, 3))
-        );
-    }
-
-    #[test]
-    fn parse_old_range_without_count() {
-        assert_eq!(
-            parse_old_range("@@ -5 +5,2 @@"),
-            Some((5, 1))
-        );
-    }
-
-    #[test]
-    fn parse_old_range_zero_count() {
-        assert_eq!(
-            parse_old_range("@@ -10,0 +10,3 @@"),
-            Some((10, 0))
-        );
-    }
-
-    #[test]
-    fn parse_old_range_with_context() {
-        assert_eq!(
-            parse_old_range("@@ -1,3 +1,3 @@ fn main()"),
-            Some((1, 3))
-        );
-    }
-
-    #[test]
-    fn parse_old_range_invalid() {
-        assert_eq!(parse_old_range("not a header"), None);
-    }
-
-    #[test]
-    fn parse_header_ranges_both() {
-        assert_eq!(parse_header_ranges("@@ -7,3 +7,4 @@"), (7, 7));
-    }
-
-    #[test]
-    fn parse_header_ranges_different_starts() {
-        assert_eq!(parse_header_ranges("@@ -10,5 +12,3 @@"), (10, 12));
-    }
-
-    #[test]
-    fn parse_header_ranges_with_context_label() {
-        assert_eq!(
-            parse_header_ranges("@@ -1,3 +1,3 @@ fn main()"),
-            (1, 1)
-        );
-    }
-
-    #[test]
-    fn parse_header_ranges_no_count() {
-        assert_eq!(parse_header_ranges("@@ -5 +5,2 @@"), (5, 5));
-    }
-
-    #[test]
-    fn format_hunk_display_absolute_lines() {
-        let hunk = DiffHunk {
-            file: "test.rs".into(),
-            old_file: "test.rs".into(),
-            new_file: "test.rs".into(),
-            file_header: String::new(),
-            header: "@@ -7,3 +7,3 @@".into(),
-            lines: vec![
-                " context".into(),
-                "-old_line".into(),
-                "+new_line".into(),
-                " context2".into(),
-            ],
-            unsupported_metadata: None,
-        };
-        let output = format_hunk_display(&hunk, false);
-        // Should contain absolute line numbers starting at 7
-        assert!(output.contains(" 7:"), "should start at line 7: {output}");
-        assert!(output.contains(" 8:"), "should have line 8: {output}");
-        assert!(!output.contains(" 1:"), "should NOT have line 1: {output}");
-    }
-
-    #[test]
-    fn fingerprint_ignores_context() {
-        let hunk1 = DiffHunk {
-            file: "a.txt".into(),
-            old_file: "a.txt".into(),
-            new_file: "a.txt".into(),
-            file_header: String::new(),
-            header: String::new(),
-            lines: vec![
-                " context1".into(),
-                "-old".into(),
-                "+new".into(),
-                " context2".into(),
-            ],
-            unsupported_metadata: None,
-        };
-        let hunk2 = DiffHunk {
-            file: "a.txt".into(),
-            old_file: "a.txt".into(),
-            new_file: "a.txt".into(),
-            file_header: String::new(),
-            header: String::new(),
-            lines: vec![
-                " different_context".into(),
-                "-old".into(),
-                "+new".into(),
-                " also_different".into(),
-            ],
-            unsupported_metadata: None,
-        };
-        assert_eq!(
-            HunkFingerprint::from_hunk(&hunk1),
-            HunkFingerprint::from_hunk(&hunk2),
-        );
-    }
-}
-
 /// JJ tool protocol handler.
 ///
 /// JJ invokes: `jj-hunk-tool _jj-tool $left $right`
@@ -1166,4 +1069,113 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_old_range_with_count() {
+        assert_eq!(parse_old_range("@@ -1,3 +1,3 @@"), Some((1, 3)));
+    }
+
+    #[test]
+    fn parse_old_range_without_count() {
+        assert_eq!(parse_old_range("@@ -5 +5,2 @@"), Some((5, 1)));
+    }
+
+    #[test]
+    fn parse_old_range_zero_count() {
+        assert_eq!(parse_old_range("@@ -10,0 +10,3 @@"), Some((10, 0)));
+    }
+
+    #[test]
+    fn parse_old_range_with_context() {
+        assert_eq!(parse_old_range("@@ -1,3 +1,3 @@ fn main()"), Some((1, 3)));
+    }
+
+    #[test]
+    fn parse_old_range_invalid() {
+        assert_eq!(parse_old_range("not a header"), None);
+    }
+
+    #[test]
+    fn parse_header_ranges_both() {
+        assert_eq!(parse_header_ranges("@@ -7,3 +7,4 @@"), (7, 7));
+    }
+
+    #[test]
+    fn parse_header_ranges_different_starts() {
+        assert_eq!(parse_header_ranges("@@ -10,5 +12,3 @@"), (10, 12));
+    }
+
+    #[test]
+    fn parse_header_ranges_with_context_label() {
+        assert_eq!(parse_header_ranges("@@ -1,3 +1,3 @@ fn main()"), (1, 1));
+    }
+
+    #[test]
+    fn parse_header_ranges_no_count() {
+        assert_eq!(parse_header_ranges("@@ -5 +5,2 @@"), (5, 5));
+    }
+
+    #[test]
+    fn format_hunk_display_absolute_lines() {
+        let hunk = DiffHunk {
+            file: "test.rs".into(),
+            old_file: "test.rs".into(),
+            new_file: "test.rs".into(),
+            file_header: String::new(),
+            header: "@@ -7,3 +7,3 @@".into(),
+            lines: vec![
+                " context".into(),
+                "-old_line".into(),
+                "+new_line".into(),
+                " context2".into(),
+            ],
+            unsupported_metadata: None,
+        };
+        let output = format_hunk_display(&hunk, false);
+        // Should contain absolute line numbers starting at 7
+        assert!(output.contains(" 7:"), "should start at line 7: {output}");
+        assert!(output.contains(" 8:"), "should have line 8: {output}");
+        assert!(!output.contains(" 1:"), "should NOT have line 1: {output}");
+    }
+
+    #[test]
+    fn fingerprint_ignores_context() {
+        let hunk1 = DiffHunk {
+            file: "a.txt".into(),
+            old_file: "a.txt".into(),
+            new_file: "a.txt".into(),
+            file_header: String::new(),
+            header: String::new(),
+            lines: vec![
+                " context1".into(),
+                "-old".into(),
+                "+new".into(),
+                " context2".into(),
+            ],
+            unsupported_metadata: None,
+        };
+        let hunk2 = DiffHunk {
+            file: "a.txt".into(),
+            old_file: "a.txt".into(),
+            new_file: "a.txt".into(),
+            file_header: String::new(),
+            header: String::new(),
+            lines: vec![
+                " different_context".into(),
+                "-old".into(),
+                "+new".into(),
+                " also_different".into(),
+            ],
+            unsupported_metadata: None,
+        };
+        assert_eq!(
+            HunkFingerprint::from_hunk(&hunk1),
+            HunkFingerprint::from_hunk(&hunk2),
+        );
+    }
 }

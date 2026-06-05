@@ -7,9 +7,7 @@ pub use git_surgeon::hunk_id::assign_ids;
 
 /// Get the jj workspace root directory.
 pub fn get_repo_root() -> Result<std::path::PathBuf> {
-    let output = Command::new("jj")
-        .args(["root", "--no-pager"])
-        .output()?;
+    let output = Command::new("jj").args(["root", "--no-pager"]).output()?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         bail!("jj root failed: {stderr}");
@@ -21,7 +19,11 @@ pub fn get_repo_root() -> Result<std::path::PathBuf> {
 /// Get per-line annotation (change IDs) for a file at a given revision.
 /// File path must be repo-root-relative.
 /// Returns one change ID per line of the file.
-pub fn get_jj_annotations(revision: &str, file: &str, repo_root: &std::path::Path) -> Result<Vec<String>> {
+pub fn get_jj_annotations(
+    revision: &str,
+    file: &str,
+    repo_root: &std::path::Path,
+) -> Result<Vec<String>> {
     let output = Command::new("jj")
         .args([
             "file",
@@ -79,7 +81,11 @@ pub fn get_mutable_ancestors_with_descriptions(
 
 /// Get mutable ancestors that touched a specific file, ordered most-recent-first.
 /// File path must be repo-root-relative.
-pub fn get_ancestors_touching_file(source_rev: &str, file: &str, repo_root: &std::path::Path) -> Result<Vec<String>> {
+pub fn get_ancestors_touching_file(
+    source_rev: &str,
+    file: &str,
+    repo_root: &std::path::Path,
+) -> Result<Vec<String>> {
     let revset = format!("(immutable_heads()..({source_rev}-)) & files(\"{file}\")");
     let output = Command::new("jj")
         .args([
@@ -105,8 +111,14 @@ pub fn get_ancestors_touching_file(source_rev: &str, file: &str, repo_root: &std
 pub fn get_current_op_id() -> Result<String> {
     let output = Command::new("jj")
         .args([
-            "op", "log", "--no-pager", "--no-graph", "--limit", "1",
-            "-T", "self.id().short(16)",
+            "op",
+            "log",
+            "--no-pager",
+            "--no-graph",
+            "--limit",
+            "1",
+            "-T",
+            "self.id().short(16)",
         ])
         .output()?;
     if !output.status.success() {
@@ -124,7 +136,13 @@ pub fn get_jj_diff(revision: &Option<String>, debug: bool) -> Result<String> {
         cmd.args(["-r", rev]);
     }
     if debug {
-        eprintln!("debug: running jj diff --git --no-pager{}", revision.as_ref().map(|r| format!(" -r {r}")).unwrap_or_default());
+        eprintln!(
+            "debug: running jj diff --git --no-pager{}",
+            revision
+                .as_ref()
+                .map(|r| format!(" -r {r}"))
+                .unwrap_or_default()
+        );
     }
     let output = cmd.output()?;
     if !output.status.success() {
