@@ -14,7 +14,7 @@ Workspaces are an excellent substrate for delegating work to a subagent:
 - The subagent gets its own on-disk directory to edit freely.
 - Any commit it makes is **immediately visible** in the main workspace — no `pull`, `fetch`, `push`, or `merge` step.
 - When the subagent finishes, the main agent can rebase, squash, or reorder the resulting commits into the user's stack with normal jj operations.
-- Cleanup is two commands.
+- Cleanup is a check for leftover work plus two commands.
 
 **Core principle:** the workspace is the subagent's sandbox; the commit graph is the shared output channel.
 
@@ -31,7 +31,7 @@ Do **not** use a workspace if:
 
 - The subagent only needs to read code. Just spawn it with the repo path; no isolation needed.
 - The task is interactive (the subagent will need back-and-forth with the user mid-task — a workspace adds no value over the main one).
-- You're on a colocated jj/git repo and the subagent needs git tooling. See [Colocated repos](#colocated-repos).
+- You're on a colocated jj/git repo, the subagent needs git tooling, and your jj gives new workspaces no `.git`. See [Colocated repos](#colocated-repos).
 
 ## Mental Model
 
@@ -57,7 +57,7 @@ Think of each workspace as an independent cursor (`@`) into one repository. Comm
 4. Spawn the subagent
 5. Inspect the resulting commits from the main workspace
 6. Integrate (rebase / squash / abandon) into the user's stack
-7. Forget the workspace and delete the directory
+7. Check for leftover work, forget the workspace, delete the directory
 ```
 
 ### 1. Pick a parent
@@ -133,7 +133,7 @@ jj show --git --no-pager task-foo@-            # diff of the most recent real co
 
 If the subagent followed the brief, its head is `task-foo@-` and `task-foo@` is empty. If it didn't:
 
-- `task-foo@` still has uncommitted work — either commit it on its behalf with `jj commit -r task-foo@ -m "..."` (works from any workspace — do NOT cd into the subagent's workspace) or abandon it.
+- `task-foo@` still has uncommitted work — fold it into the commit it belongs to or abandon it, with the commands in step 7 (they run from your own workspace — do NOT cd into the subagent's workspace).
 - `task-foo@` has a description but is non-empty — same thing; it's still "being edited".
 
 ### 6. Integrate
@@ -158,20 +158,31 @@ All of these are safe across workspaces — the shared op log handles concurrenc
 
 ### 7. Cleanup
 
+First check the workspace's `@` for work the subagent left uncommitted:
+
+```bash
+jj log --no-pager -r 'task-foo@' -T 'if(empty,"empty","NOT EMPTY") ++ " " ++ description.first_line() ++ "\n"'
+```
+
+Forgetting a workspace does not abandon its `@`: jj keeps it as a stray visible commit unless it is empty and has no description. If it is not empty, decide where the work goes (both commands run from your own workspace):
+
+```bash
+jj squash -u --from task-foo@ --into <change>   # keep it: fold it into the commit it belongs to
+jj abandon task-foo@                            # drop it on purpose
+```
+
+If it is empty but still carries the `-m` description from step 2 (the subagent made no commits), `jj abandon task-foo@` too.
+
+Then forget the workspace and delete its directory:
+
 ```bash
 jj workspace forget task-foo
 rm -rf ../task-foo
 ```
 
-`jj workspace forget` only drops the repo's tracking of that workspace — it does **not** delete files on disk. You must `rm -rf` separately. Order does not matter.
+`jj workspace forget` only drops the repo's tracking of that workspace — it does **not** delete files on disk. You must `rm -rf` separately. Neither command reaches build output that your setup keeps outside the workspace directory (for example a per-workspace cargo target dir elsewhere on disk); delete that too, or it stays behind with nothing pointing at it.
 
-If the subagent left `task-foo@` non-empty and you don't want it:
-
-```bash
-jj abandon task-foo@
-jj workspace forget task-foo
-rm -rf ../task-foo
-```
+> **If your machine provides a teardown helper** (for example `worktree-teardown <dir>`), run it instead of `forget` + `rm -rf`, while the directory still exists — a helper may need the directory to find the workspace and its out-of-tree build output. Check `task-foo@` first either way.
 
 ## Quick Reference
 
@@ -211,6 +222,11 @@ Ground rules:
   them. Use `jj undo` or `jj op revert <op-id>` for targeted undo.
 - Do NOT `jj git push`, do NOT create bookmarks, unless explicitly
   asked.
+- Do NOT redirect build output (CARGO_TARGET_DIR, --target-dir, or
+  similar) unless the orchestrator says so. Output moved elsewhere is
+  not cleaned up with the workspace.
+- Do NOT forget or delete this workspace. The main agent cleans it
+  up after it integrates your commits.
 
 Done when:
 - The task is complete and any tests pass.
@@ -222,7 +238,7 @@ Done when:
 ## Pitfalls
 
 - **NEVER `cd` to another workspace to run jj commands.** jj determines which working copy to snapshot based on cwd. If you `cd` to the primary workspace and run `jj status`, you snapshot *that* workspace's `@` — potentially clobbering work the user or another agent has in progress. Cross-workspace inspection uses revsets (`task-foo@`, `default@`) from wherever you are; cross-workspace writes use `-r` flags. There is no jj operation that requires you to be in a specific workspace's directory.
-- **`forget` does not delete files; `rm -rf` does not forget.** Always pair them. A `rm -rf` without `forget` leaves a dangling workspace entry that jj will complain about.
+- **`forget` does not delete files; `rm -rf` does not forget.** Always pair them. A `rm -rf` without `forget` leaves a dangling workspace entry that jj will complain about. Build output kept outside the workspace directory survives both; delete it too, or use your machine's teardown helper if it has one.
 - **`jj op restore` is repo-wide.** If the subagent runs it, every workspace rewinds, including the user's. Forbid it in the prompt. Use `jj op revert <op-id>` for targeted undo, or `jj --at-op=<op-id> restore -r @` for file-level recovery.
 - **Stale working copies.** If you rebase the subagent's ancestors while it's still running, its next `jj` command will say "stale". Either avoid rewriting its ancestors mid-task, or have it run `jj workspace update-stale` before resuming.
 - **Sparse-pattern inheritance.** `jj workspace add` copies sparse patterns by default. If the main workspace is sparse but the subagent needs the full tree, pass `--sparse-patterns full`.
@@ -233,7 +249,7 @@ Done when:
 
 ### Colocated repos
 
-In a colocated jj/git repo, `jj workspace add` creates a directory with `.jj/` but typically without `.git/`. If the subagent's tooling needs git (editors, hooks, CI scripts), the workspace will not work for it. Options:
+In a colocated jj/git repo, recent jj (seen with 0.45.1) makes the new workspace a git worktree of the main repo too: the directory gets a `.git` file (`gitdir: <main>/.git/worktrees/<name>`), and jj keeps that worktree's HEAD at the workspace's `@-`, as it does in the main workspace. So git tooling (editors, hooks, CI scripts) works there. Older jj created the directory with `.jj/` but no `.git`, so git tooling saw no repository. If yours does that and the subagent needs git, options:
 
 - Keep the subagent in the main workspace and use commit-level isolation instead (have it work on a side stack you'll abandon if it fails).
 - Run the workflow on a non-colocated repo.
