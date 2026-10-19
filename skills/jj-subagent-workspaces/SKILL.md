@@ -14,7 +14,7 @@ Workspaces are an excellent substrate for delegating work to a subagent:
 - The subagent gets its own on-disk directory to edit freely.
 - Any commit it makes is **immediately visible** in the main workspace — no `pull`, `fetch`, `push`, or `merge` step.
 - When the subagent finishes, the main agent can rebase, squash, or reorder the resulting commits into the user's stack with normal jj operations.
-- Cleanup is a check for leftover work plus two commands.
+- Cleanup checks retained work, then uses the workspace teardown helper.
 
 **Core principle:** the workspace is the subagent's sandbox; the commit graph is the shared output channel.
 
@@ -25,7 +25,7 @@ This skill covers only the jj side. **How** you spawn a subagent (shell exec, Ta
 - A task can be safely delegated to another agent and you don't want it editing the user's working copy.
 - You want a subagent to run in parallel with your own edits in the main workspace.
 - The task is bounded enough that it produces one or more commits you'll later land into the user's stack.
-- You need a clean rollback path: bad output → abandon commits, forget workspace, delete directory.
+- You need isolated output that can be integrated or deliberately discarded before teardown.
 
 Do **not** use a workspace if:
 
@@ -57,7 +57,7 @@ Think of each workspace as an independent cursor (`@`) into one repository. Comm
 4. Spawn the subagent
 5. Inspect the resulting commits from the main workspace
 6. Integrate (rebase / squash / abandon) into the user's stack
-7. Check for leftover work, forget the workspace, delete the directory
+7. Check for leftover work, then run the teardown helper
 ```
 
 ### 1. Pick a parent
@@ -92,7 +92,15 @@ Verify:
 ```bash
 jj workspace list --no-pager
 jj log --no-pager -r 'task-foo@ | task-foo@-'
+# Compare full IDs, not just the displayed descriptions:
+jj log --no-pager --no-graph -r '<parent-revset>' -T 'change_id ++ "\n"'
+jj log --no-pager --no-graph -r 'task-foo@-' -T 'change_id ++ "\n"'
 ```
+
+The two full IDs must match the single intended parent. Resolve and record that
+parent before workspace creation; stop before dispatch if the check differs.
+From inside the new workspace, the equivalent check is
+`jj log --no-pager --no-graph -r @- -T change_id`.
 
 ### 3. Brief the subagent
 
@@ -102,7 +110,7 @@ The subagent's prompt needs, at minimum:
 - **VCS tool**: use `jj`, not `git`. If the `jj-surgeon` skill (or any jj reference) is available, point at it.
 - **Commit discipline**: atomic commits with `jj commit -m "..."`. Leave `@` empty when done.
 - **Scope**: stay inside the workspace directory. Do not touch other workspaces.
-- **Forbidden ops**: no `jj op restore` (rewinds the **shared** op log across all workspaces). No `jj git push`. No bookmarks unless explicitly asked.
+- **Recovery**: use forward changes (`jj new`, `jj abandon`, `jj restore`, `jj squash`) for owned changes. No operation-log rewinds (`jj undo`, `jj redo`, `jj op restore`, `jj op revert`). Report a broken working copy; do not repair it. No `jj git push` or bookmarks unless explicitly asked.
 - **Deliverable**: print the change IDs of the resulting commits before exiting.
 
 See the [prompt template](#subagent-prompt-template) below.
@@ -173,23 +181,39 @@ jj abandon task-foo@                            # drop it on purpose
 
 If it is empty but still carries the `-m` description from step 2 (the subagent made no commits), `jj abandon task-foo@` too.
 
-Then forget the workspace and delete its directory:
+While the directory still exists, use the teardown helper when available:
 
 ```bash
-jj workspace forget task-foo
-rm -rf ../task-foo
+worktree-teardown ../task-foo
 ```
 
-`jj workspace forget` only drops the repo's tracking of that workspace — it does **not** delete files on disk. You must `rm -rf` separately. Neither command reaches build output that your setup keeps outside the workspace directory (for example a per-workspace cargo target dir elsewhere on disk); delete that too, or it stays behind with nothing pointing at it.
+The helper checks for work that would be lost and removes owned out-of-tree
+build output as well as the workspace. Treat a refusal as a blocker: preserve the
+directory, report the reason, and resolve retained work before retrying. Do not
+bypass it with manual deletion. If no helper is available, retain the workspace
+and report cleanup pending rather than inventing a less safe fallback.
 
-> **If your machine provides a teardown helper** (for example `worktree-teardown <dir>`), run it instead of `forget` + `rm -rf`, while the directory still exists — a helper may need the directory to find the workspace and its out-of-tree build output. Check `task-foo@` first either way.
+Forget by name only when the directory is already gone. Verify the recorded path
+and name with `jj workspace list --no-pager`; check that the path is absent
+(including a dangling symlink) before removing the stale registration:
+
+```bash
+if [ ! -e ../task-foo ] && [ ! -L ../task-foo ]; then
+  jj workspace forget task-foo
+fi
+```
+
+This only repairs a stale registration. It cannot recover lost files or clean
+out-of-tree output; report any output that still needs cleanup.
 
 ## Quick Reference
 
 ```bash
 jj workspace add <path> -r <parent> --name <name> -m <msg>   # create
 jj workspace list --no-pager                                  # list (use a template for scripting)
-jj workspace forget <name>                                    # untrack (does NOT delete files)
+worktree-teardown <path>                                     # checked teardown while path exists
+# Only after verifying the recorded path is already absent:
+jj workspace forget <name>                                    # remove stale registration
 jj workspace update-stale                                     # recover after ancestor rewrite
 jj workspace rename <new-name>                                # rename current workspace
 
@@ -217,9 +241,11 @@ Ground rules:
   another workspace corrupts that workspace's `@`.
 - Make atomic commits with `jj commit -m "..."` as you go. Leave `@`
   empty when you finish (`jj commit`, not `jj describe`).
-- Do NOT touch other workspaces. Do NOT run `jj op restore` — the op
-  log is shared across workspaces and that command rewinds all of
-  them. Use `jj undo` or `jj op revert <op-id>` for targeted undo.
+- Recover owned changes with forward operations: `jj new`, `jj abandon`,
+  `jj restore`, or `jj squash`. The operation log is shared: do NOT run
+  `jj undo`, `jj redo`, `jj op restore`, or `jj op revert`.
+- Report a broken working copy; do not repair it. Stop the affected work
+  and preserve the workspace for the coordinator.
 - Do NOT `jj git push`, do NOT create bookmarks, unless explicitly
   asked.
 - Do NOT redirect build output (CARGO_TARGET_DIR, --target-dir, or
@@ -238,8 +264,8 @@ Done when:
 ## Pitfalls
 
 - **NEVER `cd` to another workspace to run jj commands.** jj determines which working copy to snapshot based on cwd. If you `cd` to the primary workspace and run `jj status`, you snapshot *that* workspace's `@` — potentially clobbering work the user or another agent has in progress. Cross-workspace inspection uses revsets (`task-foo@`, `default@`) from wherever you are; cross-workspace writes use `-r` flags. There is no jj operation that requires you to be in a specific workspace's directory.
-- **`forget` does not delete files; `rm -rf` does not forget.** Always pair them. A `rm -rf` without `forget` leaves a dangling workspace entry that jj will complain about. Build output kept outside the workspace directory survives both; delete it too, or use your machine's teardown helper if it has one.
-- **`jj op restore` is repo-wide.** If the subagent runs it, every workspace rewinds, including the user's. Forbid it in the prompt. Use `jj op revert <op-id>` for targeted undo, or `jj --at-op=<op-id> restore -r @` for file-level recovery.
+- **Teardown needs the directory.** Run `worktree-teardown <dir>` while it still exists, after retaining or deliberately discarding leftover work. Keep the directory on refusal or if the helper is unavailable. Forget by name only after confirming the recorded directory is already absent.
+- **Recovery changes owned commits, not the shared operation log.** Use `jj new`, `jj abandon`, `jj restore`, or `jj squash` for owned changes; forbid `jj undo`, `jj redo`, `jj op restore`, and `jj op revert`. Report a broken working copy; do not repair it.
 - **Stale working copies.** If you rebase the subagent's ancestors while it's still running, its next `jj` command will say "stale". Either avoid rewriting its ancestors mid-task, or have it run `jj workspace update-stale` before resuming.
 - **Sparse-pattern inheritance.** `jj workspace add` copies sparse patterns by default. If the main workspace is sparse but the subagent needs the full tree, pass `--sparse-patterns full`.
 - **Nesting.** Don't put the new workspace inside the main workspace's tree — the outer workspace will try to snapshot the inner `.jj/`. Use a sibling path.
