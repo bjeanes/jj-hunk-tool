@@ -26,6 +26,14 @@ equivalent of leaving a dirty working copy in Git.
 - *Commit ID* — content hash (standard hex). Changes on every rewrite. Matches
   the Git SHA in colocated repos. Becomes permanent once immutable.
 
+**Keep one change ID for the whole lifecycle.** Preserve the original ID until
+that change is deliberately abandoned, squashed, or submitted to main. Edit,
+rebase, restore into, or squash fixups into the original. Duplicate-and-replace
+breaks references in notes, trackers and reviews, creates doubled subjects in the
+log, and adds a swap step with extra checks. For concurrent workers or an already
+edited duplicate, use the recipes in
+[Preserving change IDs](references/change-identity.md).
+
 **No branches, only bookmarks.** Bookmarks are named pointers to commits. They
 do NOT advance automatically on new commits (unlike Git branches). They DO
 follow when a commit is rewritten. See
