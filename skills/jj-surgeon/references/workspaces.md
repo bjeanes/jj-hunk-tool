@@ -11,14 +11,20 @@ jj workspaces are fundamentally different:
 
 - **Shared repo.** All workspaces point to the same `.jj/repo/` store. There is
   no separate clone, no separate history, no separate refs.
-- **Shared operation log.** Every `jj` command in any workspace creates an
-  operation entry visible to all workspaces. `jj op log` in workspace A shows
-  operations performed in workspace B. **This makes `jj op restore <op-id>`
-  dangerous in multi-workspace repos** — it rewinds the entire shared state
-  back to that op, dropping every workspace's subsequent work. Prefer
-  `jj op revert <op-id>` (inverts one specific op) or
-  `jj --at-op=<op-id> restore -r @` (file-level recovery without touching
-  the op timeline). `jj undo` is fine — it only inverts the most recent op.
+- **Shared operation log.** Every `jj` command in any workspace appends an
+  operation to one log shared by all workspaces; `jj op log` in workspace A
+  shows operations performed in workspace B, and jj reconciles concurrent
+  operations into a single timeline. **This makes op-log rewinds dangerous in
+  multi-workspace repos.** `jj op restore <op-id>` rewinds the entire shared
+  state back to that op, dropping every workspace's subsequent work. `jj undo`
+  (and `jj redo`) are no safer: `jj undo` reverts whatever operation ran most
+  recently *across all workspaces*, so if another workspace committed or rebased
+  since your last command, `jj undo` silently reverts *their* work, not yours.
+  Recover forward instead — `jj restore` / `jj abandon` / `jj revert`, or
+  `jj --at-op=<op-id> restore -r @` for read-only file recovery.
+  `jj op revert <op-id>` inverts one specific op by adding a new op on top
+  rather than rewinding, but it still mutates shared history — confirm no other
+  workspace built on that op first.
 - **No merge-back.** Commits created in one workspace are immediately visible in
   every other workspace. The main workspace can rebase, squash, bookmark, or
   push those commits — no pull, fetch, or merge needed.

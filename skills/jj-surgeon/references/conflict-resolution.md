@@ -15,6 +15,9 @@ Common triggers:
 - `jj rebase` moving commits to a new base that has diverged
 - Fixing clippy/fmt warnings in an early commit when later commits touched the
   same lines
+- Amending or squashing into a file at its old path, below a descendant that
+  renames that file or directory (jj does not rename-trace across rewrites — see
+  [Renames across history rewrites](#renames-across-history-rewrites))
 
 ## Detecting conflicts
 
@@ -142,6 +145,27 @@ jj edit <conflicted-change>
 a further descendant, you may create cascading conflicts that are harder to
 untangle.
 
+## Renames across history rewrites
+
+jj's rebase machinery does **not** detect file renames. When a descendant commit
+renames a file or directory — for example a crate or module rename that also
+rewrites import paths inside the moved files — and you amend or squash content
+into that file at its **old** path in an ancestor below the rename, the
+automatic rebase of the rename commit conflicts. The merge sees one side delete
+the old path and add the new path, and the other side modify the old path.
+
+To resolve:
+
+1. Apply your modification manually to the **new** path.
+2. Re-apply any content transformations the rename commit performs inside the
+   file — rewritten `use`/import statements, changed module paths, and so on. A
+   naive copy of the old-path content to the new path silently reverts those
+   transformations and usually breaks the build.
+3. Remove the conflicted old path.
+
+Before amending into a commit that sits below a known rename, expect this and
+budget for manual resolution.
+
 ## Tips
 
 - **Conflicts from formatting/clippy fixes** are usually simple: the `%%%%%%%`
@@ -162,6 +186,8 @@ untangle.
 - **Use `jj resolve --list`** to check which files still have conflicts. Once
   all are resolved, the commit drops its "(conflict)" marker automatically.
 
-- **If resolution goes wrong**, `jj undo` reverts your last operation.
-  Alternatively, the conflict markers are still valid data — you can re-read
-  and try again.
+- **If resolution goes wrong**, fix it forward — the conflict markers are valid
+  data, so re-read the file and correct the edit directly, or redo the
+  resolution. Avoid `jj undo`: in a shared repo it rewinds the op head, which
+  may be another workspace's operation rather than your edit. See
+  [Operation-log safety](../SKILL.md#operation-log-safety-in-shared-repos).

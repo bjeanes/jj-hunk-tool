@@ -46,11 +46,15 @@ Conflicts are data (not blocking states) but must be resolved before the code
 compiles. See
 [references/conflict-resolution.md](references/conflict-resolution.md).
 
-**Operation log.** Every command creates an operation entry. `jj undo` reverts
-the last operation. To undo an older specific operation, use
-`jj op revert <op-id>` — it inverts just that one op. **Avoid
-`jj op restore <op-id>`**, which rewinds the entire repo (including other
-workspaces' work) to that point. See [Undoing operations](#undoing-operations).
+**Operation log.** Every command records an operation in a single log that is
+**shared by every workspace** on the repo — concurrent operations from
+different workspaces are reconciled into one timeline. Rewinding that log —
+`jj undo`, `jj redo`, `jj op restore` — mutates shared state: it acts on
+whatever operation sits at the shared head, which may be another workspace's
+(or a human's) work, not yours. In any repo another agent or person might
+touch — the default for agent work — **do not rewind the op log; recover
+forward instead** (`jj restore`, `jj abandon`, `jj revert`). See
+[Operation-log safety](#operation-log-safety-in-shared-repos).
 
 ## Always pass these flags
 
@@ -224,33 +228,94 @@ this happens — resolve them before continuing. See
 
 ## Undoing operations
 
+**Prefer forward-only recovery.** The safe way to back out a mistake is a *new*
+operation that reaches the state you want — not rewinding the op log.
+
 ```bash
-jj undo                                 # undo last operation (alias for `jj op revert @`)
-jj op log --no-pager -n 10              # view recent operation history
-jj op revert <op-id>                    # invert one specific past operation
-jj revert -r <rev> -d @                 # create reverse-patch of <rev> on @
+jj restore <paths...>                   # reset files in @ to their parent state
 jj abandon <rev>                        # drop a revision, rebase descendants
+jj revert -r <rev> -d @                 # create reverse-patch of <rev> on @
+jj op log --no-pager -n 10              # view recent operation history (read-only)
+jj --at-op=<op-id> restore -r @         # recover files from a past op without rewinding
 ```
 
 ### Operation-log safety in shared repos
 
-The operation log is **shared across all workspaces** (see
-[references/workspaces.md](references/workspaces.md)). This makes one command
-dangerous:
+**What the op log is.** Every jj command — commit, rebase, squash, bookmark
+move, even the automatic working-copy snapshot — appends an entry to a single
+operation log in `.jj/repo/`. That log is **shared by every workspace** on the
+repo, not per-workspace; commands run concurrently in different workspaces
+append to the *same* log and jj reconciles them into one timeline (see
+[references/workspaces.md](references/workspaces.md)). Each entry records the
+complete repo state: all bookmarks, all Git refs, and the `@` of *every*
+workspace.
 
-- **`jj op restore <op-id>` is destructive across workspaces.** It rewinds the
-  whole repo state — including bookmarks, commits, and the `@` of *every*
-  workspace — back to that op. Any work another workspace (or the human) did
-  after that op is dropped from the current view. Never run it just to undo
-  your own changes.
-- **Use `jj op revert <op-id>` instead.** It inverts a single targeted
-  operation and creates a new op on top, so unrelated work in other workspaces
-  is preserved.
-- **For file-level recovery, use `jj --at-op=<op-id> restore -r @`** (or
-  similar) to restore specific files from a past state without touching the
-  op log timeline.
-- `jj undo` is safe — it inverts only the most recent op (equivalent to
-  `jj op revert @`).
+**Why rewinding it loses other people's work.** Because the log is one shared
+timeline, "the last operation" is the last operation performed by *anyone* —
+you, another agent in another workspace, or the human. Any command that moves
+the op head backward acts on that shared head, so it can silently drop work a
+different workspace did:
+
+- **`jj undo` / `jj redo` are NOT safe here.** `jj undo` is `jj op revert @`,
+  and `@` is the current op head — whatever ran most recently *across all
+  workspaces*. If another workspace committed, rebased, or even just snapshotted
+  since your last command, `jj undo` reverts *their* operation, not yours, and
+  they lose it with no warning.
+- **`jj op restore <op-id>` is worse.** It rewinds the entire shared state —
+  bookmarks, commits, and every workspace's `@` — back to `<op-id>`, discarding
+  everything any workspace did afterward.
+
+These are only truly safe in a **solo repo** — one workspace, nobody else
+touching it. For agent work that assumption almost never holds (subagent
+workspaces, quipu fan-out, a human working alongside you), so **treat every
+op-log rewind as unsafe by default.**
+
+**Recover forward instead:**
+
+- Back out content with a *new* operation: `jj restore`, `jj abandon`,
+  `jj revert -r <rev> -d @`, or re-editing the commit directly.
+- To pull files out of a past state without touching the timeline, read them at
+  that op: `jj --at-op=<op-id> restore -r @` (or `jj --at-op=<op-id> file show`).
+- If you must invert one specific *past* op, `jj op revert <op-id>` adds a new
+  op on top rather than rewinding — but it still mutates shared history, so
+  confirm no other workspace built on that op first.
+- If you have already broken the working copy, **stop and tell the human** —
+  leave the op log alone rather than trying to rewind your way out.
+
+## Hidden commits
+
+After a history rewrite (`abandon`, `squash`, `split`, `rebase`), the old
+commits become **hidden**: they drop out of `jj log`, but they stay in the
+store and remain addressable by commit ID.
+
+### Verifying history rewrites
+
+A hidden commit ID works fine as a `--from`/`--to` operand for `jj diff`. This
+is the standard way to confirm a large rewrite preserved the tree:
+
+```bash
+jj diff --from <old-tip-commit-id> --to <new-tip> --summary
+```
+
+The summary shows exactly the intended delta — empty when the rewrite was
+purely structural (reordering, re-describing, splitting without content
+changes). Any unexpected paths mean the rewrite altered content it should have
+left alone.
+
+### Resurrecting hidden commits
+
+Reading a hidden commit is safe; landing on top of one is not. `jj new <hidden>`
+or `jj edit <hidden>` **resurrects** it. Visibility propagates to ancestors, so
+its entire hidden ancestor chain becomes visible again. If those commits were
+rewritten rather than merely abandoned, their change IDs now have visible
+successors, and every affected change ID becomes **divergent**.
+
+To recover, abandon the resurrected chain, scoping the revset so it covers only
+the resurrected commits:
+
+```bash
+jj abandon 'trunk()..<resurrected-head>'
+```
 
 ## Conflicts
 
@@ -358,16 +423,19 @@ jj rebase -r <rev> -A <after>           # move <rev> after <after>
 jj rebase -r <rev> -B <before>          # move <rev> before <before>
 ```
 
-### Undo mistakes
+### Back out a mistake
 
 ```bash
-jj undo                                 # undo last operation
-jj op log --no-pager                    # find operation to revert
-jj op revert <op-id>                    # invert one specific past op (safe in shared repos)
+# Make a NEW operation that reaches the desired state — do NOT rewind the op log.
+jj restore <paths...>                   # reset files in @ to their parent
+jj abandon <rev>                        # drop a bad revision
+jj revert -r <rev> -d @                 # reverse-patch a committed change
+jj op log --no-pager                    # inspect op history (read-only)
 ```
 
-Avoid `jj op restore <op-id>` — it rewinds *all* workspaces' state and can
-clobber concurrent work. See
+Do NOT `jj undo`, `jj redo`, or `jj op restore` in a repo any other workspace
+or person might touch — they rewind the shared op log and can silently drop
+others' work. See
 [Operation-log safety](#operation-log-safety-in-shared-repos).
 
 ## Common pitfalls for agents
@@ -381,12 +449,27 @@ clobber concurrent work. See
   hunk-level.
 - **NEVER use bare `jj diffedit`.** It opens a diff editor. Use
   `jj-hunk-tool diffedit` with explicit hunk IDs.
-- **NEVER use `jj op restore <op-id>` to undo your own changes.** The
-  operation log is shared across workspaces, so `op restore` rewinds *every*
-  workspace's state — clobbering work the user or another agent did
-  concurrently. Use `jj op revert <op-id>` to invert a single targeted op,
-  or `jj undo` for the most recent one. See
+- **NEVER rewind the shared op log.** `jj undo`, `jj redo`, and
+  `jj op restore <op-id>` all move the op head backward over a log shared by
+  every workspace. `jj undo` reverts whatever operation ran most recently
+  *across all workspaces* — which may be another agent's or the human's, dropped
+  silently. `jj op restore` rewinds every workspace's entire state. Recover
+  forward instead (`jj restore`, `jj abandon`, `jj revert`, or
+  `jj --at-op=<op-id> restore` for read-only file recovery). See
   [Operation-log safety](#operation-log-safety-in-shared-repos).
+- **NEVER `jj new` or `jj edit` onto a hidden commit.** A rewritten commit stays
+  addressable by commit ID, but landing on it resurrects it along with its whole
+  hidden ancestor chain, and turns any rewritten change IDs divergent. Hidden
+  commit IDs are safe only as read-only `jj diff` operands. See
+  [Hidden commits](#hidden-commits).
+- **Do NOT create empty commits as position markers.** If you're tracking
+  progress across a stack — e.g. a "CI walk" checking each commit — resist the
+  urge to `jj new -m "ci walk scratch"` (or similar) to mark where you are. An
+  empty, descriptively-named commit clutters the stack, and these almost never
+  get cleaned up. Use a **bookmark** for ephemeral position-tracking instead:
+  `jj bookmark set ci-walk -r <rev>` moves a named pointer with no commit, and
+  `jj bookmark delete ci-walk` removes it cleanly when done. See
+  [references/git-interop.md](references/git-interop.md).
 - Do NOT `jj abandon @` to "clean up" an empty working copy. It's normal.
 - **Always leave `@` empty when you're done working.** Use `jj commit -m "msg"`
   to finalize a change — NOT `jj describe`, which leaves your changes in `@`.
@@ -407,6 +490,12 @@ clobber concurrent work. See
   them immediately — cascading conflicts are much harder to fix. See
   [references/conflict-resolution.md](references/conflict-resolution.md).
   Use `jj log -r 'conflicts()'` if you need to find all conflicted commits.
+- **jj does not rename-trace across history rewrites.** Amending or squashing
+  into a file at its old path, below a descendant that renames it (e.g. a crate
+  or module rename), causes the rebase of the rename commit to conflict. Resolve
+  by applying your change to the new path — re-applying the rename commit's
+  in-file transformations such as rewritten imports — then removing the old path.
+  See [references/conflict-resolution.md](references/conflict-resolution.md).
 
 ## Reference docs
 
